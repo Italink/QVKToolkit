@@ -49,217 +49,30 @@
 #include <QThread>
 #include <QTimer>
 #include <vulkan/vulkan.hpp>
+#include "QVKPrimitive.h"
+#include "QDateTime"
 
 VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 
 Q_LOGGING_CATEGORY(lcGuiVk, "qt.vulkan")
 
-/*!
-  \class QVKWindow
-  \inmodule QtGui
-  \since 5.10
-  \brief The QVKWindow class is a convenience subclass of QWindow to perform Vulkan rendering.
-
-  QVKWindow is a Vulkan-capable QWindow that manages a Vulkan device, a
-  graphics queue, a command pool and buffer, a depth-stencil image and a
-  double-buffered FIFO swapchain, while taking care of correct behavior when it
-  comes to events like resize, special situations like not having a device
-  queue supporting both graphics and presentation, device lost scenarios, and
-  additional functionality like reading the rendered content back. Conceptually
-  it is the counterpart of QOpenGLWindow in the Vulkan world.
-
-  \note QVKWindow does not always eliminate the need to implement a fully
-  custom QWindow subclass as it will not necessarily be sufficient in advanced
-  use cases.
-
-  QVKWindow can be embedded into QWidget-based user interfaces via
-  QWidget::createWindowContainer(). This approach has a number of limitations,
-  however. Make sure to study the
-  \l{QWidget::createWindowContainer()}{documentation} first.
-
-  A typical application using QVKWindow may look like the following:
-
-  \snippet code/src_gui_vulkan_QVKWindow.cpp 0
-
-  As it can be seen in the example, the main patterns in QVKWindow usage are:
-
-  \list
-
-  \li The QVulkanInstance is associated via QWindow::setVulkanInstance(). It is
-  then retrievable via QWindow::vulkanInstance() from everywhere, on any
-  thread.
-
-  \li Similarly to QVulkanInstance, device extensions can be queried via
-  supportedDeviceExtensions() before the actual initialization. Requesting an
-  extension to be enabled is done via setDeviceExtensions(). Such calls must be
-  made before the window becomes visible, that is, before calling show() or
-  similar functions. Unsupported extension requests are gracefully ignored.
-
-  \li The renderer is implemented in a QVKWindowRenderer subclass, an
-  instance of which is created in the createRenderer() factory function.
-
-  \li The core Vulkan commands are exposed via the QVulkanFunctions object,
-  retrievable by calling QVulkanInstance::functions(). Device level functions
-  are available after creating a VkDevice by calling
-  QVulkanInstance::deviceFunctions().
-
-  \li The building of the draw calls for the next frame happens in
-  QVKWindowRenderer::startNextFrame(). The implementation is expected to
-  add commands to the command buffer returned from currentCommandBuffer().
-  Returning from the function does not indicate that the commands are ready for
-  submission. Rather, an explicit call to frameReady() is required. This allows
-  asynchronous generation of commands, possibly on multiple threads. Simple
-  implementations will simply call frameReady() at the end of their
-  QVKWindowRenderer::startNextFrame().
-
-  \li The basic Vulkan resources (physical device, graphics queue, a command
-  pool, the window's main command buffer, image formats, etc.) are exposed on
-  the QVKWindow via lightweight getter functions. Some of these are for
-  convenience only, and applications are always free to query, create and
-  manage additional resources directly via the Vulkan API.
-
-  \li The renderer lives in the gui/main thread, like the window itself. This
-  thread is then throttled to the presentation rate, similarly to how OpenGL
-  with a swap interval of 1 would behave. However, the renderer implementation
-  is free to utilize multiple threads in any way it sees fit. The accessors
-  like vulkanInstance(), currentCommandBuffer(), etc. can be called from any
-  thread. The submission of the main command buffer, the queueing of present,
-  and the building of the next frame do not start until frameReady() is
-  invoked on the gui/main thread.
-
-  \li When the window is made visible, the content is updated automatically.
-  Further updates can be requested by calling QWindow::requestUpdate(). To
-  render continuously, call requestUpdate() after frameReady().
-
-  \endlist
-
-  For troubleshooting, enable the logging category \c{qt.vulkan}. Critical
-  errors are printed via qWarning() automatically.
-
-  \section1 Coordinate system differences between OpenGL and Vulkan
-
-  There are two notable differences to be aware of: First, with Vulkan Y points
-  down the screen in clip space, while OpenGL uses an upwards pointing Y axis.
-  Second, the standard OpenGL projection matrix assume a near and far plane
-  values of -1 and 1, while Vulkan prefers 0 and 1.
-
-  In order to help applications migrate from OpenGL-based code without having
-  to flip Y coordinates in the vertex data, and to allow using QMatrix4x4
-  functions like QMatrix4x4::perspective() while keeping the Vulkan viewport's
-  minDepth and maxDepth set to 0 and 1, QVKWindow provides a correction
-  matrix retrievable by calling clipCorrectionMatrix().
-
-  \section1 Multisampling
-
-  While disabled by default, multisample antialiasing is fully supported by
-  QVKWindow. Additional color buffers and resolving into the swapchain's
-  non-multisample buffers are all managed automatically.
-
-  To query the supported sample counts, call supportedSampleCounts(). When the
-  returned set contains 4, 8, ..., passing one of those values to setSampleCount()
-  requests multisample rendering.
-
-  \note unlike QSurfaceFormat::setSamples(), the list of supported sample
-  counts are exposed to the applications in advance and there is no automatic
-  falling back to lower sample counts in setSampleCount(). If the requested value
-  is not supported, a warning is shown and a no multisampling will be used.
-
-  \section1 Reading images back
-
-  When supportsGrab() returns true, QVKWindow can perform readbacks from
-  the color buffer into a QImage. grab() is a slow and inefficient operation,
-  so frequent usage should be avoided. It is nonetheless valuable since it
-  allows applications to take screenshots, or tools and tests to process and
-  verify the output of the GPU rendering.
-
-  \section1 sRGB support
-
-  While many applications will be fine with the default behavior of
-  QVKWindow when it comes to swapchain image formats,
-  setPreferredColorFormats() allows requesting a pre-defined format. This is
-  useful most notably when working in the sRGB color space. Passing a format
-  like \c{VK_FORMAT_B8G8R8A8_SRGB} results in choosing an sRGB format, when
-  available.
-
-  \section1 Validation layers
-
-  During application development it can be extremely valuable to have the
-  Vulkan validation layers enabled. As shown in the example code above, calling
-  QVulkanInstance::setLayers() on the QVulkanInstance before
-  QVulkanInstance::create() enables validation, assuming the Vulkan driver
-  stack in the system contains the necessary layers.
-
-  \note Be aware of platform-specific differences. On desktop platforms
-  installing the \l{https://www.lunarg.com/vulkan-sdk/}{Vulkan SDK} is
-  typically sufficient. However, Android for example requires deploying
-  additional shared libraries together with the application, and also mandates
-  a different list of validation layer names. See
-  \l{https://developer.android.com/ndk/guides/graphics/validation-layer.html}{the
-  Android Vulkan development pages} for more information.
-
-  \note QVKWindow does not expose device layers since this functionality
-  has been deprecated since version 1.0.13 of the Vulkan API.
-
-  \sa QVulkanInstance, QWindow
- */
-
- /*!
-   \class QVKWindowRenderer
-   \inmodule QtGui
-   \since 5.10
-
-   \brief The QVKWindowRenderer class is used to implement the
-   application-specific rendering logic for a QVKWindow.
-
-   Applications typically subclass both QVKWindow and QVKWindowRenderer.
-   The former allows handling events, for example, input, while the latter allows
-   implementing the Vulkan resource management and command buffer building that
-   make up the application's rendering.
-
-   In addition to event handling, the QVKWindow subclass is responsible for
-   providing an implementation for QVKWindow::createRenderer() as well. This
-   is where the window and renderer get connected. A typical implementation will
-   simply create a new instance of a subclass of QVKWindowRenderer.
-  */
-
-  /*!
-	  Constructs a new QVKWindow with the given \a parent.
-
-	  The surface type is set to QSurface::VulkanSurface.
-   */
-	QVKWindow::QVKWindow(QWindow* parent) : QWindow(*(new QVKWindowPrivate), parent)
+QVKWindow::QVKWindow(QWindow* parent) : QWindow(*(new QVKWindowPrivate), parent)
 {
+	camera_.setup(this);
 	setSurfaceType(QSurface::VulkanSurface);
+	glslang::InitializeProcess();
 }
 
 /*!
 	Destructor.
 */
-QVKWindow::~QVKWindow() { }
-
-QVKWindowPrivate::~QVKWindowPrivate()
-{
-	// graphics resource cleanup is already done at this point due to
-	// QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed
+QVKWindow::~QVKWindow() {
+	glslang::FinalizeProcess();
 }
 
-/*!
-	\enum QVKWindow::Flag
+QVKWindowPrivate::~QVKWindowPrivate() {
+}
 
-	This enum describes the flags that can be passed to setFlags().
-
-	\value PersistentResources Ensures no graphics resources are released when
-	the window becomes unexposed. The default behavior is to release
-	everything, and reinitialize later when becoming visible again.
- */
-
- /*!
-	 Configures the behavior based on the provided \a flags.
-
-	 \note This function must be called before the window is made visible or at
-	 latest in QVKWindowRenderer::preInitResources(), and has no effect if
-	 called afterwards.
-  */
 void QVKWindow::setFlags(Flags flags)
 {
 	Q_D(QVKWindow);
@@ -279,11 +92,6 @@ QVKWindow::Flags QVKWindow::flags() const
 	return d->flags;
 }
 
-/*!
-   Returns the list of properties for the supported physical devices in the system.
-
-   \note This function can be called before making the window visible.
- */
 QList<VkPhysicalDeviceProperties> QVKWindow::availablePhysicalDevices()
 {
 	Q_D(QVKWindow);
@@ -329,16 +137,6 @@ QList<VkPhysicalDeviceProperties> QVKWindow::availablePhysicalDevices()
 	return d->physDevProps;
 }
 
-/*!
-	Requests the usage of the physical device with index \a idx. The index
-	corresponds to the list returned from availablePhysicalDevices().
-
-	By default the first physical device is used.
-
-	\note This function must be called before the window is made visible or at
-	latest in QVKWindowRenderer::preInitResources(), and has no effect if
-	called afterwards.
- */
 void QVKWindow::setPhysicalDeviceIndex(int idx)
 {
 	Q_D(QVKWindow);
@@ -355,12 +153,6 @@ void QVKWindow::setPhysicalDeviceIndex(int idx)
 	d->physDevIndex = idx;
 }
 
-/*!
-	Returns the list of the extensions that are supported by logical devices
-	created from the physical device selected by setPhysicalDeviceIndex().
-
-	\note This function can be called before making the window visible.
-  */
 QVulkanInfoVector<QVulkanExtension> QVKWindow::supportedDeviceExtensions()
 {
 	Q_D(QVKWindow);
@@ -400,18 +192,6 @@ QVulkanInfoVector<QVulkanExtension> QVKWindow::supportedDeviceExtensions()
 	return QVulkanInfoVector<QVulkanExtension>();
 }
 
-/*!
-	Sets the list of device \a extensions to be enabled.
-
-	Unsupported extensions are ignored.
-
-	The swapchain extension will always be added automatically, no need to
-	include it in this list.
-
-	\note This function must be called before the window is made visible or at
-	latest in QVKWindowRenderer::preInitResources(), and has no effect if
-	called afterwards.
- */
 void QVKWindow::setDeviceExtensions(const QByteArrayList& extensions)
 {
 	Q_D(QVKWindow);
@@ -422,31 +202,6 @@ void QVKWindow::setDeviceExtensions(const QByteArrayList& extensions)
 	d->requestedDevExtensions = extensions;
 }
 
-/*!
-	Sets the preferred \a formats of the swapchain.
-
-	By default no application-preferred format is set. In this case the
-	surface's preferred format will be used or, in absence of that,
-	\c{VK_FORMAT_B8G8R8A8_UNORM}.
-
-	The list in \a formats is ordered. If the first format is not supported,
-	the second will be considered, and so on. When no formats in the list are
-	supported, the behavior is the same as in the default case.
-
-	To query the actual format after initialization, call colorFormat().
-
-	\note This function must be called before the window is made visible or at
-	latest in QVKWindowRenderer::preInitResources(), and has no effect if
-	called afterwards.
-
-	\note Reimplementing QVKWindowRenderer::preInitResources() allows
-	dynamically examining the list of supported formats, should that be
-	desired. There the surface is retrievable via
-	QVulkanInstace::surfaceForWindow(), while this function can still safely be
-	called to affect the later stages of initialization.
-
-	\sa colorFormat()
- */
 void QVKWindow::setPreferredColorFormats(const QList<VkFormat>& formats)
 {
 	Q_D(QVKWindow);
@@ -468,18 +223,6 @@ static struct
 	{ VK_SAMPLE_COUNT_64_BIT, 64 }
 };
 
-/*!
-	Returns the set of supported sample counts when using the physical device
-	selected by setPhysicalDeviceIndex(), as a sorted list.
-
-	By default QVKWindow uses a sample count of 1. By calling setSampleCount()
-	with a different value (2, 4, 8, ...) from the set returned by this
-	function, multisample anti-aliasing can be requested.
-
-	\note This function can be called before making the window visible.
-
-	\sa setSampleCount()
- */
 QList<int> QVKWindow::supportedSampleCounts()
 {
 	Q_D(const QVKWindow);
@@ -507,27 +250,6 @@ QList<int> QVKWindow::supportedSampleCounts()
 	return result;
 }
 
-/*!
-	Requests multisample antialiasing with the given \a sampleCount. The valid
-	values are 1, 2, 4, 8, ... up until the maximum value supported by the
-	physical device.
-
-	When the sample count is greater than 1, QVKWindow will create a
-	multisample color buffer instead of simply targeting the swapchain's
-	images. The rendering in the multisample buffer will get resolved into the
-	non-multisample buffers at the end of each frame.
-
-	To examine the list of supported sample counts, call supportedSampleCounts().
-
-	When setting up the rendering pipeline, call sampleCountFlagBits() to query the
-	active sample count as a \c VkSampleCountFlagBits value.
-
-	\note This function must be called before the window is made visible or at
-	latest in QVKWindowRenderer::preInitResources(), and has no effect if
-	called afterwards.
-
-	\sa supportedSampleCounts(), sampleCountFlagBits()
- */
 void QVKWindow::setSampleCount(int sampleCount)
 {
 	Q_D(QVKWindow);
@@ -913,9 +635,14 @@ void QVKWindowPrivate::reset()
 	}
 	devFuncs->vkDeviceWaitIdle(dev);
 
-	if (defaultRenderPass) {
-		devFuncs->vkDestroyRenderPass(dev, defaultRenderPass, nullptr);
-		defaultRenderPass = VK_NULL_HANDLE;
+	if (windowRenderPass) {
+		devFuncs->vkDestroyRenderPass(dev, windowRenderPass, nullptr);
+		windowRenderPass = VK_NULL_HANDLE;
+	}
+
+	if (singleRenderPass) {
+		devFuncs->vkDestroyRenderPass(dev, singleRenderPass, nullptr);
+		singleRenderPass = VK_NULL_HANDLE;
 	}
 
 	if (pipelineCache) {
@@ -975,22 +702,22 @@ bool QVKWindowPrivate::createDefaultRenderPass()
 
 	attDesc[1].format = dsFormat;
 	attDesc[1].samples = sampleCount;
-	attDesc[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	attDesc[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attDesc[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+	attDesc[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attDesc[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	attDesc[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attDesc[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	attDesc[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 	attDesc[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
 	if (msaa) {
 		// msaa render target
 		attDesc[2].format = colorFormat;
 		attDesc[2].samples = sampleCount;
-		attDesc[2].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		attDesc[2].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
 		attDesc[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 		attDesc[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		attDesc[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		attDesc[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		attDesc[2].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		attDesc[2].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	}
 
@@ -1019,12 +746,37 @@ bool QVKWindowPrivate::createDefaultRenderPass()
 		rpInfo.attachmentCount = 3;
 	}
 
-	VkResult err = devFuncs->vkCreateRenderPass(dev, &rpInfo, nullptr, &defaultRenderPass);
+	VkResult err = devFuncs->vkCreateRenderPass(dev, &rpInfo, nullptr, &windowRenderPass);
 	if (err != VK_SUCCESS) {
 		qWarning("QVKWindow: Failed to create renderpass: %d", err);
 		return false;
 	}
 
+	vk::AttachmentDescription attachmentDesc;
+	attachmentDesc.format = vk::Format::eB8G8R8A8Unorm;
+	attachmentDesc.samples = vk::SampleCountFlagBits::e1;
+	attachmentDesc.loadOp = vk::AttachmentLoadOp::eClear;
+	attachmentDesc.storeOp = vk::AttachmentStoreOp::eStore;
+	attachmentDesc.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+	attachmentDesc.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+	attachmentDesc.initialLayout = vk::ImageLayout::eUndefined;
+	attachmentDesc.finalLayout = vk::ImageLayout::eColorAttachmentOptimal;
+
+	vk::AttachmentReference attachmentRef;
+	attachmentRef.layout = vk::ImageLayout::eColorAttachmentOptimal;
+	attachmentRef.attachment = 0;
+	vk::SubpassDescription subpassDesc;
+	subpassDesc.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
+	subpassDesc.colorAttachmentCount = 1;
+	subpassDesc.pColorAttachments = &attachmentRef;
+
+	vk::RenderPassCreateInfo renderPassInfo;
+	renderPassInfo.attachmentCount = 1;
+	renderPassInfo.pAttachments = &attachmentDesc;
+	renderPassInfo.subpassCount = 1;
+	renderPassInfo.pSubpasses = &subpassDesc;
+	vk::Device device = dev;
+	singleRenderPass = device.createRenderPass(renderPassInfo);
 	return true;
 }
 
@@ -1218,7 +970,7 @@ void QVKWindowPrivate::recreateSwapChain()
 		VkFramebufferCreateInfo fbInfo;
 		memset(&fbInfo, 0, sizeof(fbInfo));
 		fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-		fbInfo.renderPass = defaultRenderPass;
+		fbInfo.renderPass = windowRenderPass;
 		fbInfo.attachmentCount = msaa ? 3 : 2;
 		fbInfo.pAttachments = views;
 		fbInfo.width = swapChainImageSize.width();
@@ -1267,6 +1019,23 @@ void QVKWindowPrivate::recreateSwapChain()
 		devFuncs->vkCmdPipelineBarrier(cmdBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
 									   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
 									   nullptr, 1, &presTrans);
+
+		if (msaa) {
+			presTrans.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			presTrans.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			presTrans.image = image.msaaImage;
+			devFuncs->vkCmdPipelineBarrier(cmdBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+										   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
+										   nullptr, 1, &presTrans);
+		}
+
+		presTrans.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		presTrans.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		presTrans.image = dsImage;
+		presTrans.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+		devFuncs->vkCmdPipelineBarrier(cmdBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+							   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
+							   nullptr, 1, &presTrans);
 		err = devFuncs->vkEndCommandBuffer(cmdBuffer);
 		if (err != VK_SUCCESS) {
 			qWarning("QVKWindow: Failed to end acquire-on-present-queue command buffer: %d",
@@ -1697,11 +1466,231 @@ bool QVKWindow::isValid() const
 	return d->status == QVKWindowPrivate::StatusReady;
 }
 
+QVKWindow::WindowFrameSource QVKWindow::createWindowFrameSource()
+{
+	vk::Device deivce = device();
+	QVKWindow::WindowFrameSource wfs;
+	vk::ImageCreateInfo imageInfo;
+	imageInfo.imageType = vk::ImageType::e2D;
+	imageInfo.extent.width = swapChainImageSize().width();
+	imageInfo.extent.height = swapChainImageSize().height();
+	imageInfo.extent.depth = 1;
+	imageInfo.arrayLayers = 1;
+	imageInfo.mipLevels = 1;
+	imageInfo.samples = vk::SampleCountFlagBits::e1;
+	imageInfo.format = colorFormat();
+	imageInfo.usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment;
+	imageInfo.tiling = vk::ImageTiling::eOptimal;
+	imageInfo.initialLayout = vk::ImageLayout::eUndefined;
+	wfs.image = device().createImage(imageInfo);
+	vk::MemoryRequirements memReq = device().getImageMemoryRequirements(wfs.image);
+	vk::MemoryAllocateInfo memAllocInfo(memReq.size, deviceLocalMemoryIndex());
+	wfs.imageMemory = device().allocateMemory(memAllocInfo);
+	device().bindImageMemory(wfs.image, wfs.imageMemory, 0);
+
+	vk::ImageViewCreateInfo imageViewInfo;
+	imageViewInfo.viewType = vk::ImageViewType::e2D;
+	imageViewInfo.components = { vk::ComponentSwizzle::eR,vk::ComponentSwizzle::eG, vk::ComponentSwizzle::eB, vk::ComponentSwizzle::eA };
+	imageViewInfo.format = imageInfo.format;
+	imageViewInfo.image = wfs.image;
+	imageViewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+	imageViewInfo.subresourceRange.layerCount = imageViewInfo.subresourceRange.levelCount = 1;
+	wfs.imageView = device().createImageView(imageViewInfo);
+
+	VkImage dsImage;
+	VkImageView dsImageView;
+	VkDeviceMemory dsImageMemory;
+
+	if (!d_func()->createTransientImage(VK_FORMAT_D24_UNORM_S8_UINT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+		VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, &dsImage,
+		&dsImageMemory, &dsImageView, 1)) {
+		return QVKWindow::WindowFrameSource();
+	};
+	wfs.dsImage = dsImage;
+	wfs.dsImageMemory = dsImageMemory;
+	wfs.dsImageView = dsImageView;
+
+	bool msaaEnabled = sampleCountFlagBits() != vk::SampleCountFlagBits::e1;
+	if (msaaEnabled) {
+		VkImage msaaImage;
+		VkImageView msaaImageView;
+		VkDeviceMemory msaaImageMemory;
+		if (!d_func()->createTransientImage((VkFormat)colorFormat(), VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			VK_IMAGE_ASPECT_COLOR_BIT, &msaaImage,
+			&msaaImageMemory, &msaaImageView, 1)) {
+			return QVKWindow::WindowFrameSource();
+		};
+		wfs.msaaImage = msaaImage;
+		wfs.msaaImageMemory = msaaImageMemory;
+		wfs.msaaImageView = msaaImageView;
+	}
+
+	vk::ImageView views[3] = {
+		wfs.imageView,
+		wfs.dsImageView,
+		msaaEnabled ? wfs.msaaImageView : VK_NULL_HANDLE
+	};
+
+	vk::FramebufferCreateInfo framebufferInfo;
+	framebufferInfo.renderPass = windowRenderPass();
+	framebufferInfo.attachmentCount = msaaEnabled ? 3 : 2;
+	framebufferInfo.pAttachments = views;
+	framebufferInfo.width = swapChainImageSize().width();
+	framebufferInfo.height = swapChainImageSize().height();
+	framebufferInfo.layers = 1;
+	wfs.framebuffer = device().createFramebuffer(framebufferInfo);
+
+	vk::CommandBufferAllocateInfo cmdBufferAlllocInfo;
+	cmdBufferAlllocInfo.level = vk::CommandBufferLevel::ePrimary;
+	cmdBufferAlllocInfo.commandPool = graphicsCommandPool();
+	cmdBufferAlllocInfo.commandBufferCount = 1;
+	vk::CommandBuffer cmdBuffer = device().allocateCommandBuffers(cmdBufferAlllocInfo).front();
+	vk::CommandBufferBeginInfo cmdBufferBeginInfo;
+	cmdBufferBeginInfo.flags = vk::CommandBufferUsageFlagBits::eRenderPassContinue;
+	cmdBuffer.begin(cmdBufferBeginInfo);
+
+	vk::ImageMemoryBarrier barrier;
+	barrier.srcAccessMask = vk::AccessFlagBits::eHostWrite;
+	barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+	barrier.oldLayout = vk::ImageLayout::eUndefined;
+	barrier.newLayout = vk::ImageLayout::ePresentSrcKHR;
+	barrier.image = wfs.image;
+	barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+	barrier.subresourceRange.layerCount = 1;
+	barrier.subresourceRange.levelCount = 1;
+	cmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, barrier);
+
+	if (msaaEnabled) {
+		barrier.oldLayout = vk::ImageLayout::eUndefined;
+		barrier.newLayout = vk::ImageLayout::eColorAttachmentOptimal;
+		barrier.image = wfs.msaaImage;
+		cmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, barrier);
+	}
+
+	barrier.oldLayout = vk::ImageLayout::eUndefined;
+	barrier.newLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+	barrier.image = wfs.dsImage;
+	barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
+	cmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, barrier);
+
+	cmdBuffer.end();
+
+	vk::SubmitInfo submitInfo;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &cmdBuffer;
+	graphicsQueue().submit(submitInfo);
+	graphicsQueue().waitIdle();
+	device().freeCommandBuffers(graphicsCommandPool(), cmdBuffer);
+
+	return wfs;
+}
+
+void QVKWindow::destoryWindowFrameSource(WindowFrameSource& wfs)
+{
+	device().destroyFramebuffer(wfs.framebuffer);
+
+	device().destroyImage(wfs.image);
+	device().destroyImageView(wfs.imageView);
+	device().freeMemory(wfs.imageMemory);
+
+	device().destroyImage(wfs.dsImage);
+	device().destroyImageView(wfs.dsImageView);
+	device().freeMemory(wfs.dsImageMemory);
+
+	if (wfs.msaaImage) {
+		device().destroyImage(wfs.msaaImage);
+		device().destroyImageView(wfs.msaaImageView);
+		device().freeMemory(wfs.msaaImageMemory);
+	}
+}
+
+QVKWindow::SingleFrameSource QVKWindow::createSingleFrameSource()
+{
+	QVKWindow::SingleFrameSource sfs;
+	vk::ImageCreateInfo imageInfo;
+	imageInfo.imageType = vk::ImageType::e2D;
+	imageInfo.extent.width = swapChainImageSize().width();
+	imageInfo.extent.height = swapChainImageSize().height();
+	imageInfo.extent.depth = 1;
+	imageInfo.arrayLayers = 1;
+	imageInfo.mipLevels = 1;
+	imageInfo.samples = vk::SampleCountFlagBits::e1;
+	imageInfo.format = vk::Format::eB8G8R8A8Unorm;
+	imageInfo.usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment;
+	imageInfo.tiling = vk::ImageTiling::eOptimal;
+	imageInfo.initialLayout = vk::ImageLayout::eUndefined;
+	sfs.image = device().createImage(imageInfo);
+	vk::MemoryRequirements memReq = device().getImageMemoryRequirements(sfs.image);
+	vk::MemoryAllocateInfo memAllocInfo(memReq.size, deviceLocalMemoryIndex());
+	sfs.imageMemory = device().allocateMemory(memAllocInfo);
+	device().bindImageMemory(sfs.image, sfs.imageMemory, 0);
+
+	vk::ImageViewCreateInfo imageViewInfo;
+	imageViewInfo.viewType = vk::ImageViewType::e2D;
+	imageViewInfo.components = { vk::ComponentSwizzle::eR,vk::ComponentSwizzle::eG, vk::ComponentSwizzle::eB, vk::ComponentSwizzle::eA };
+	imageViewInfo.format = imageInfo.format;
+	imageViewInfo.image = sfs.image;
+	imageViewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+	imageViewInfo.subresourceRange.layerCount = imageViewInfo.subresourceRange.levelCount = 1;
+	sfs.imageView = device().createImageView(imageViewInfo);
+
+
+	vk::FramebufferCreateInfo framebufferInfo;
+	framebufferInfo.renderPass = singleRenderPass();
+	framebufferInfo.attachmentCount = 1;
+	framebufferInfo.pAttachments = &sfs.imageView;
+	framebufferInfo.width = swapChainImageSize().width();
+	framebufferInfo.height = swapChainImageSize().height();
+	framebufferInfo.layers = 1;
+	sfs.framebuffer = device().createFramebuffer(framebufferInfo);
+
+	vk::ImageMemoryBarrier barrier;
+	barrier.srcAccessMask = vk::AccessFlagBits::eHostWrite;
+	barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+	barrier.oldLayout = vk::ImageLayout::eUndefined;
+	barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+	barrier.image = sfs.image;
+	barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+	barrier.subresourceRange.layerCount = 1;
+	barrier.subresourceRange.levelCount = 1;
+
+	vk::CommandBufferAllocateInfo cmdBufferAlllocInfo;
+	cmdBufferAlllocInfo.level = vk::CommandBufferLevel::ePrimary;
+	cmdBufferAlllocInfo.commandPool = graphicsCommandPool();
+	cmdBufferAlllocInfo.commandBufferCount = 1;
+	vk::CommandBuffer cmdBuffer = device().allocateCommandBuffers(cmdBufferAlllocInfo).front();
+	vk::CommandBufferBeginInfo cmdBufferBeginInfo;
+	cmdBufferBeginInfo.flags = vk::CommandBufferUsageFlagBits::eRenderPassContinue;
+	cmdBuffer.begin(cmdBufferBeginInfo);
+	cmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eHost, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, barrier);
+	cmdBuffer.end();
+
+	vk::SubmitInfo submitInfo;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &cmdBuffer;
+	graphicsQueue().submit(submitInfo);
+	graphicsQueue().waitIdle();
+	device().freeCommandBuffers(graphicsCommandPool(), cmdBuffer);
+	return sfs;
+}
+
+void QVKWindow::destorySingleFrameSource(SingleFrameSource& sfs)
+{
+	device().freeMemory(sfs.imageMemory);
+	device().destroyImageView(sfs.imageView);
+	device().destroyImage(sfs.image);
+	device().destroyFramebuffer(sfs.framebuffer);
+	sfs.imageMemory = VK_NULL_HANDLE;
+	sfs.imageView = VK_NULL_HANDLE;
+	sfs.imageView = VK_NULL_HANDLE;
+	sfs.framebuffer = VK_NULL_HANDLE;
+}
+
 void QVKWindow::addRenderer(QSharedPointer<QVKRenderer> renderer)
 {
 	Q_D(QVKWindow);
 	d->rendererList.push_back(renderer);
-	renderer->window_ = this;
+	renderer->setWindow(this);
 	if (device()) {
 		renderer->initResources();
 		renderer->initSwapChainResources();
@@ -1794,33 +1783,65 @@ void QVKWindowPrivate::beginFrame()
 	if (frameGrabbing)
 		frameGrabTargetImage = QImage(swapChainImageSize, QImage::Format_RGBA8888);
 
-	QVKRenderer::FrameContext beginfo;
-	beginfo.frameBuffer = imageRes[currentImage].fb;
-	beginfo.frameImage = imageRes[currentImage].image;
-	beginfo.frameImageView = imageRes[currentImage].imageView;
-	beginfo.cmdBuffer = imageRes[currentImage].cmdBuf;
-	beginfo.viewport = swapChainImageSize;
-	beginfo.overlayRect = QRect(QPoint(0, 0), swapChainImageSize);
+	bool msaaEnabled = sampleCount != VK_SAMPLE_COUNT_1_BIT;
 
+	QVKRenderer::FrameContext frameCtx;
+	frameCtx.frameBuffer = imageRes[currentImage].fb;
+	frameCtx.frameImage = imageRes[currentImage].image;
+	frameCtx.frameImageView = imageRes[currentImage].imageView;
+	frameCtx.cmdBuffer = imageRes[currentImage].cmdBuf;
+	frameCtx.viewport = swapChainImageSize;
+	frameCtx.time = QTime::currentTime().msecsSinceStartOfDay()/1000.0f;
 	if (!rendererList.isEmpty()) {
 		vk::Viewport viewport;
 		viewport.x = 0;
 		viewport.y = 0;
-		viewport.width = beginfo.viewport.width();
-		viewport.height = beginfo.viewport.height();
+		viewport.width = frameCtx.viewport.width();
+		viewport.height = frameCtx.viewport.height();
 		viewport.minDepth = 0;
 		viewport.maxDepth = 1;
-		beginfo.cmdBuffer.setViewport(0, viewport);
+		frameCtx.cmdBuffer.setViewport(0, viewport);
 		vk::Rect2D scissor;
 		scissor.offset.x = scissor.offset.y = 0;
-		scissor.extent.width = beginfo.viewport.width();
-		scissor.extent.height = beginfo.viewport.height();
-		beginfo.cmdBuffer.setScissor(0, scissor);
+		scissor.extent.width = frameCtx.viewport.width();
+		scissor.extent.height = frameCtx.viewport.height();
+		frameCtx.cmdBuffer.setScissor(0, scissor);
+
+		vk::ClearColorValue clearColor(std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f });
+		vk::ClearDepthStencilValue clearDS(1.0f, 0);
+		vk::RenderPassBeginInfo beginInfo;
+		beginInfo.renderPass = windowRenderPass;
+		beginInfo.framebuffer = frameCtx.frameBuffer;
+		beginInfo.renderArea.extent.width = frameCtx.viewport.width();
+		beginInfo.renderArea.extent.height = frameCtx.viewport.height();
+
+		frameCtx.cmdBuffer.beginRenderPass(beginInfo, vk::SubpassContents::eInline);
+
+		vk::ClearAttachment cleatAtt[2];
+		cleatAtt[0].aspectMask = vk::ImageAspectFlagBits::eColor;
+		cleatAtt[0].clearValue = clearColor;
+
+		cleatAtt[1].aspectMask = vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
+		cleatAtt[1].clearValue = clearDS;
+
+		vk::ClearRect clearRect[2];
+		clearRect[0].layerCount = 1;
+		clearRect[0].rect.extent.width = swapChainImageSize.width();
+		clearRect[0].rect.extent.height = swapChainImageSize.height();
+		clearRect[1] = clearRect[0];
+
+		frameCtx.cmdBuffer.clearAttachments(2, cleatAtt, 2, clearRect);
+		frameCtx.cmdBuffer.endRenderPass();
 	}
 
 	for (auto& renderer : rendererList) {
 		framePending = true;
-		renderer->startNextFrame(beginfo);
+		renderer->startNextFrame(frameCtx);
+
+		QVKPrimitive* primitive = dynamic_cast<QVKPrimitive*>(renderer.data());
+		if (primitive) {
+			frameCtx.overlayRect |= primitive->calculateOverlayArea();
+		}
 	}
 	if (!rendererList.isEmpty()) {
 		q->frameReady();
@@ -1831,7 +1852,7 @@ void QVKWindowPrivate::beginFrame()
 		VkRenderPassBeginInfo rpBeginInfo;
 		memset(&rpBeginInfo, 0, sizeof(rpBeginInfo));
 		rpBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-		rpBeginInfo.renderPass = defaultRenderPass;
+		rpBeginInfo.renderPass = windowRenderPass;
 		rpBeginInfo.framebuffer = image.fb;
 		rpBeginInfo.renderArea.extent.width = swapChainImageSize.width();
 		rpBeginInfo.renderArea.extent.height = swapChainImageSize.height();
@@ -2142,7 +2163,7 @@ void QVKWindowPrivate::finishBlockingReadback()
 }
 
 /*!
-	Returns the active physical device.
+	Returns the active physical device().
 
 	\note Calling this function is only valid from the invocation of
 	QVKWindowRenderer::preInitResources() up until
@@ -2158,7 +2179,7 @@ vk::PhysicalDevice QVKWindow::physicalDevice() const
 }
 
 /*!
-	Returns a pointer to the properties for the active physical device.
+	Returns a pointer to the properties for the active physical device().
 
 	\note Calling this function is only valid from the invocation of
 	QVKWindowRenderer::preInitResources() up until
@@ -2174,7 +2195,7 @@ const VkPhysicalDeviceProperties* QVKWindow::physicalDeviceProperties() const
 }
 
 /*!
-	Returns the active logical device.
+	Returns the active logical device().
 
 	\note Calling this function is only valid from the invocation of
 	QVKWindowRenderer::initResources() up until
@@ -2281,10 +2302,16 @@ uint32_t QVKWindow::deviceLocalMemoryIndex() const
 
 	\sa currentFramebuffer()
  */
-vk::RenderPass QVKWindow::defaultRenderPass() const
+vk::RenderPass QVKWindow::windowRenderPass() const
 {
 	Q_D(const QVKWindow);
-	return d->defaultRenderPass;
+	return d->windowRenderPass;
+}
+
+vk::RenderPass QVKWindow::singleRenderPass() const
+{
+	Q_D(const QVKWindow);
+	return d->singleRenderPass;
 }
 
 /*!
@@ -2661,17 +2688,19 @@ QMatrix4x4 QVKWindow::clipCorrectionMatrix()
 
 vk::ShaderModule QVKWindow::createShaderFromCode(EShLanguage shaderType, const char* code)
 {
-	glslang::InitializeProcess();
 	std::vector<uint32_t> spvShader;
 	glslang::TShader shader(shaderType);
 	shader.setStrings(&code, 1);
 	EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules);
-	shader.parse(&glslang::DefaultTBuiltInResource, 100, false, messages);
-	qDebug() << shader.getInfoLog();
+	bool ret = shader.parse(&glslang::DefaultTBuiltInResource, 100, false, messages);
+	if (!ret) {
+		qDebug() << shader.getInfoLog();;
+		return {};
+	}
+
 	glslang::SpvOptions option;
 	spv::SpvBuildLogger logger;
 	glslang::GlslangToSpv(*shader.getIntermediate(), spvShader, &logger, &option);
-	glslang::FinalizeProcess();
 
 	vk::ShaderModuleCreateInfo shaderInfo;
 	shaderInfo.codeSize = sizeof(uint32_t) * spvShader.size();
@@ -2695,4 +2724,17 @@ vk::ShaderModule QVKWindow::createShaderFromSpirv(QString path)
 bool QVKRenderer::isVkTime() const
 {
 	return window_ != nullptr && window_->device();
+}
+
+void QVKRenderer::resetVkSource()
+{
+	if (isVkTime()) {
+		releaseResources();
+		initResources();
+	}
+}
+
+void QVKRenderer::setWindow(QVKWindow* window)
+{
+	window_ = window;
 }

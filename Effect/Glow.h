@@ -10,17 +10,13 @@ public:
 public:
 	Glow();
 	void setBlurSize(int size);
-	void setBlurStrength(float strength);
-	void setBlurScale(float scale);
 protected:
 	void initResources() override;
 	void releaseResources() override;
-	void paintEffect(FrameContext ctx) override;
+	void startNextFrame(FrameContext ctx) override;
 private:
-	FrameBufferSource frameBuffer_[2];
-
+	QVKWindow::SingleFrameSource frameBuffer_[2];
 	vk::Sampler sampler_;
-	vk::RenderPass renderPass_;
 	vk::DescriptorPool descPool_;
 	vk::DescriptorSetLayout blurDescSetLayout_;
 	vk::DescriptorSet blurDescSet[2];
@@ -35,8 +31,7 @@ private:
 	vk::Pipeline hdrPipeline_;
 
 	struct EffectRect {
-		QVector2D offset;
-		QVector2D scale;
+		QVector2D points[4];
 	};
 
 	struct BlurParams {
@@ -45,8 +40,8 @@ private:
 	}blurParams_;
 
 	struct HDRParams {
-		float exposure = 20.0f;
-		float gamma = 0.5f;
+		float exposure = 3.0f;
+		float gamma = 1.0f;
 	}hdrParams_;
 };
 

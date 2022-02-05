@@ -2,8 +2,7 @@
 
 Glow::Glow()
 {
-	setBlurSize(10);
-	setBlurStrength(50);
+	setBlurSize(20);
 }
 
 void Glow::setBlurSize(int size)
@@ -18,17 +17,16 @@ void Glow::setBlurSize(int size)
 		++s;
 		sum += blurParams_.weight[i] * 2;
 	}
-	for (int i = 0; i < size; i++) {
+	blurParams_.weight[0] /= sum / 2;
+	for (int i = 1; i < size; i++) {
 		blurParams_.weight[i] /= sum;
 	}
-}
 
-void Glow::setBlurStrength(float strength)
-{
-}
-
-void Glow::setBlurScale(float scale)
-{
+	sum = blurParams_.weight[0];
+	for (int i = 1; i < blurParams_.size; i++) {
+		sum += blurParams_.weight[i] * 2;
+	}
+	int k = sum;
 }
 
 void Glow::initResources()
@@ -42,31 +40,6 @@ void Glow::initResources()
 	samplerInfo.addressModeW = vk::SamplerAddressMode::eClampToEdge;
 	samplerInfo.maxAnisotropy = 1.0f;
 	sampler_ = device.createSampler(samplerInfo);
-
-	vk::AttachmentDescription attachmentDesc;
-	attachmentDesc.format = vk::Format::eB8G8R8A8Unorm;
-	attachmentDesc.samples = vk::SampleCountFlagBits::e1;
-	attachmentDesc.loadOp = vk::AttachmentLoadOp::eClear;
-	attachmentDesc.storeOp = vk::AttachmentStoreOp::eStore;
-	attachmentDesc.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
-	attachmentDesc.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
-	attachmentDesc.initialLayout = vk::ImageLayout::eUndefined;
-	attachmentDesc.finalLayout = vk::ImageLayout::eColorAttachmentOptimal;
-
-	vk::AttachmentReference attachmentRef;
-	attachmentRef.layout = vk::ImageLayout::eColorAttachmentOptimal;
-	attachmentRef.attachment = 0;
-	vk::SubpassDescription subpassDesc;
-	subpassDesc.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
-	subpassDesc.colorAttachmentCount = 1;
-	subpassDesc.pColorAttachments = &attachmentRef;
-
-	vk::RenderPassCreateInfo renderPassInfo;
-	renderPassInfo.attachmentCount = 1;
-	renderPassInfo.pAttachments = &attachmentDesc;
-	renderPassInfo.subpassCount = 1;
-	renderPassInfo.pSubpasses = &subpassDesc;
-	renderPass_ = device.createRenderPass(renderPassInfo);
 
 	vk::DescriptorPoolSize descPoolSize = {
 		vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, 4)
@@ -96,19 +69,17 @@ void Glow::initResources()
 	}
 
 	vk::GraphicsPipelineCreateInfo piplineInfo;
-
 	vk::ShaderModule vertShader = window_->createShaderFromCode(EShLangVertex, R"(#version 450
 layout (location = 0) out vec2 outUV;
 layout(push_constant) uniform EffectRect{
-		vec2 offset;
-		vec2 scale;
+	vec2 points[4];
 }effectRect;
 
 out gl_PerVertex{
 	vec4 gl_Position;
 };
 void main() {
-	outUV = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2)*effectRect.scale + effectRect.offset;
+	outUV = effectRect.points[gl_VertexIndex];
 	gl_Position = vec4(outUV * 2.0f - 1.0f, 0.0f, 1.0f);
 }
 )");
@@ -117,7 +88,7 @@ void main() {
 
 layout (binding = 0) uniform sampler2D samplerColor;
 layout(push_constant) uniform BlurParams{
-	layout(offset = 16) int size;
+	layout(offset = 32) int size;
 	float weight[10];
 }blurParams;
 layout (constant_id = 0) const int blurdirection = 0;
@@ -166,7 +137,7 @@ void main(){
 	vk::PipelineVertexInputStateCreateInfo vertexInputState({}, 0, nullptr, 0, nullptr);
 	piplineInfo.pVertexInputState = &vertexInputState;
 
-	vk::PipelineInputAssemblyStateCreateInfo vertexAssemblyState({}, vk::PrimitiveTopology::eTriangleList);
+	vk::PipelineInputAssemblyStateCreateInfo vertexAssemblyState({}, vk::PrimitiveTopology::eTriangleStrip);
 	piplineInfo.pInputAssemblyState = &vertexAssemblyState;
 
 	vk::PipelineViewportStateCreateInfo viewportState;
@@ -224,7 +195,7 @@ void main(){
 
 	piplineInfo.layout = blurPipelineLayout_;
 
-	piplineInfo.renderPass = renderPass_;
+	piplineInfo.renderPass = window_->singleRenderPass();
 
 	hBlurPipline_ = device.createGraphicsPipeline(window_->pipelineCache(), piplineInfo).value;
 
@@ -251,7 +222,7 @@ void main(){
 layout (binding = 0) uniform sampler2D blurImage;
 layout (binding = 1) uniform sampler2D rawImage;
 layout(push_constant) uniform HDRParams{
-	layout(offset = 16) float exposure;
+	layout(offset = 32) float exposure;
 	float gamma;
 }params;
 layout (location = 0) in vec2 inUV;
@@ -262,8 +233,8 @@ void main(){
 	vec3 hdrRGB = blurColor.rgb;
 	vec3 mapped = vec3(1.0)-exp(-(hdrRGB*params.exposure));
 	mapped = pow(mapped,vec3(1.0f/params.gamma));
-    //outFragColor =  vec4(mix(mapped,rawColor.rgb*params.exposure,rawColor.a), blurColor.a);
-    outFragColor = vec4(mapped,1.0);
+    outFragColor =  vec4(mix(mapped,rawColor.rgb*params.exposure,rawColor.a), blurColor.a);
+    //outFragColor =  vec4(mapped.rgb,1.0);
 })");
 	piplineShaderStage[1].module = hdrFragShader;
 	piplineShaderStage[1].pSpecializationInfo = nullptr;
@@ -285,7 +256,7 @@ void main(){
 
 	MSState.rasterizationSamples = window_->sampleCountFlagBits();
 	piplineInfo.layout = hdrPipelineLayout_;
-	piplineInfo.renderPass = window_->defaultRenderPass();
+	piplineInfo.renderPass = window_->windowRenderPass();
 	hdrPipeline_ = device.createGraphicsPipeline(window_->pipelineCache(), piplineInfo).value;
 	device.destroyShaderModule(hdrFragShader);
 	device.destroyShaderModule(vertShader);
@@ -294,83 +265,8 @@ void main(){
 void Glow::initSwapChainResources()
 {
 	vk::Device device = window_->device();
-	vk::ImageCreateInfo imageInfo;
-	imageInfo.imageType = vk::ImageType::e2D;
-	imageInfo.extent.width = window_->swapChainImageSize().width();
-	imageInfo.extent.height = window_->swapChainImageSize().height();
-	imageInfo.extent.depth = 1;
-	imageInfo.arrayLayers = 1;
-	imageInfo.mipLevels = 1;
-	imageInfo.samples = vk::SampleCountFlagBits::e1;
-	imageInfo.format = vk::Format::eB8G8R8A8Unorm;
-	imageInfo.usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment;
-	imageInfo.tiling = vk::ImageTiling::eOptimal;
-	imageInfo.initialLayout = vk::ImageLayout::ePreinitialized;
-	frameBuffer_[0].image = device.createImage(imageInfo);
-	frameBuffer_[1].image = device.createImage(imageInfo);
-	vk::MemoryRequirements memReq = device.getImageMemoryRequirements(frameBuffer_[0].image);
-	vk::MemoryAllocateInfo memAllocInfo(memReq.size, window_->deviceLocalMemoryIndex());
-	frameBuffer_[0].imageMemory = device.allocateMemory(memAllocInfo);
-	frameBuffer_[1].imageMemory = device.allocateMemory(memAllocInfo);
-
-	device.bindImageMemory(frameBuffer_[0].image, frameBuffer_[0].imageMemory, 0);
-	device.bindImageMemory(frameBuffer_[1].image, frameBuffer_[1].imageMemory, 0);
-
-	vk::ImageViewCreateInfo imageViewInfo;
-	imageViewInfo.viewType = vk::ImageViewType::e2D;
-	imageViewInfo.components = { vk::ComponentSwizzle::eR,vk::ComponentSwizzle::eG, vk::ComponentSwizzle::eB, vk::ComponentSwizzle::eA };
-	imageViewInfo.format = imageInfo.format;
-	imageViewInfo.image = frameBuffer_[0].image;
-	imageViewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-	imageViewInfo.subresourceRange.layerCount = imageViewInfo.subresourceRange.levelCount = 1;
-	frameBuffer_[0].imageView = device.createImageView(imageViewInfo);
-
-	imageViewInfo.image = frameBuffer_[1].image;
-	frameBuffer_[1].imageView = device.createImageView(imageViewInfo);
-
-	vk::FramebufferCreateInfo framebufferInfo;
-	framebufferInfo.renderPass = renderPass_;
-	framebufferInfo.attachmentCount = 1;
-	framebufferInfo.pAttachments = &frameBuffer_[0].imageView;
-	framebufferInfo.width = window_->swapChainImageSize().width();
-	framebufferInfo.height = window_->swapChainImageSize().height();
-	framebufferInfo.layers = 1;
-	frameBuffer_[0].framebuffer = device.createFramebuffer(framebufferInfo);
-
-	framebufferInfo.pAttachments = &frameBuffer_[1].imageView;
-	frameBuffer_[1].framebuffer = device.createFramebuffer(framebufferInfo);
-
-	vk::ImageMemoryBarrier barrier;
-	barrier.srcAccessMask = vk::AccessFlagBits::eHostWrite;
-	barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
-	barrier.oldLayout = vk::ImageLayout::eUndefined;
-	barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-	barrier.image = frameBuffer_[0].image;
-	barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-	barrier.subresourceRange.layerCount = 1;
-	barrier.subresourceRange.levelCount = 1;
-
-	vk::CommandBufferAllocateInfo cmdBufferAlllocInfo;
-	cmdBufferAlllocInfo.level = vk::CommandBufferLevel::ePrimary;
-	cmdBufferAlllocInfo.commandPool = window_->graphicsCommandPool();
-	cmdBufferAlllocInfo.commandBufferCount = 1;
-	vk::CommandBuffer cmdBuffer = device.allocateCommandBuffers(cmdBufferAlllocInfo).front();
-	vk::CommandBufferBeginInfo cmdBufferBeginInfo;
-	cmdBufferBeginInfo.flags = vk::CommandBufferUsageFlagBits::eRenderPassContinue;
-	cmdBuffer.begin(cmdBufferBeginInfo);
-	cmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eHost, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, barrier);
-	barrier.image = frameBuffer_[1].image;
-	cmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eHost, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, barrier);
-	cmdBuffer.end();
-
-	vk::Queue graphicsQueue = window_->graphicsQueue();
-	vk::SubmitInfo submitInfo;
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &cmdBuffer;
-	graphicsQueue.submit(submitInfo);
-	graphicsQueue.waitIdle();
-	device.freeCommandBuffers(window_->graphicsCommandPool(), cmdBuffer);
-
+	frameBuffer_[0] = window_->createSingleFrameSource();
+	frameBuffer_[1] = window_->createSingleFrameSource();
 	for (int i = 0; i < 2; ++i) {
 		vk::WriteDescriptorSet descWrite;
 		vk::DescriptorImageInfo descImageInfo(sampler_, frameBuffer_[i].imageView, vk::ImageLayout::eShaderReadOnlyOptimal);
@@ -400,22 +296,13 @@ void Glow::initSwapChainResources()
 void Glow::releaseSwapChainResources()
 {
 	vk::Device device = window_->device();
-	for (int i = 0; i < std::size(frameBuffer_); i++) {
-		device.freeMemory(frameBuffer_[i].imageMemory);
-		device.destroyImageView(frameBuffer_[i].imageView);
-		device.destroyImage(frameBuffer_[i].image);
-		device.destroyFramebuffer(frameBuffer_[i].framebuffer);
-		frameBuffer_[i].imageMemory = VK_NULL_HANDLE;
-		frameBuffer_[i].imageView = VK_NULL_HANDLE;
-		frameBuffer_[i].imageView = VK_NULL_HANDLE;
-		frameBuffer_[i].framebuffer = VK_NULL_HANDLE;
-	}
+	window_->destorySingleFrameSource(frameBuffer_[0]);
+	window_->destorySingleFrameSource(frameBuffer_[1]);
 }
 
 void Glow::releaseResources() {
 	vk::Device device = window_->device();
 	device.destroySampler(sampler_);
-	device.destroyRenderPass(renderPass_);
 	device.destroyDescriptorPool(descPool_);
 	device.destroyDescriptorSetLayout(blurDescSetLayout_);
 	device.destroyPipeline(hBlurPipline_);
@@ -427,12 +314,15 @@ void Glow::releaseResources() {
 	device.destroyPipelineLayout(hdrPipelineLayout_);
 }
 
-void Glow::paintEffect(FrameContext ctx) {
+void Glow::startNextFrame(FrameContext ctx) {
 	vk::Device device = window_->device();
 
-	vk::CommandBuffer cmdBuffer = ctx.cmdBuffer;
+	if (!ctx.overlayRect.size().isValid() || ctx.overlayRect.width() < 2 || ctx.overlayRect.height() < 2)
+		return;
 
-	ctx.overlayRect.setWidth(window_->swapChainImageSize().width() / 2);
+	ctx.overlayRect.adjust(-blurParams_.size, -blurParams_.size, blurParams_.size, blurParams_.size);
+	ctx.overlayRect &= QRect(0, 0, window_->swapChainImageSize().width(), window_->swapChainImageSize().height());
+	vk::CommandBuffer cmdBuffer = ctx.cmdBuffer;
 
 	vk::Image currentImage = ctx.frameImage;
 	vk::ImageMemoryBarrier barrier;
@@ -457,11 +347,11 @@ void Glow::paintEffect(FrameContext ctx) {
 	imageCopy.srcSubresource.layerCount = 1;
 	imageCopy.dstSubresource.layerCount = 1;
 
-	imageCopy.srcOffsets[0] = vk::Offset3D(ctx.overlayRect.x(), ctx.overlayRect.y(), 0);
-	imageCopy.srcOffsets[1] = vk::Offset3D(ctx.overlayRect.width(), ctx.overlayRect.height(), 1);
+	imageCopy.srcOffsets[0] = vk::Offset3D(ctx.overlayRect.left(), ctx.overlayRect.top(), 0);
+	imageCopy.srcOffsets[1] = vk::Offset3D(ctx.overlayRect.right(), ctx.overlayRect.bottom(), 1);
 
-	imageCopy.dstOffsets[0] = vk::Offset3D(ctx.overlayRect.x(), ctx.overlayRect.y(), 0);
-	imageCopy.dstOffsets[1] = vk::Offset3D(ctx.overlayRect.width(), ctx.overlayRect.height(), 1);
+	imageCopy.dstOffsets[0] = vk::Offset3D(ctx.overlayRect.left(), ctx.overlayRect.top(), 0);
+	imageCopy.dstOffsets[1] = vk::Offset3D(ctx.overlayRect.right(), ctx.overlayRect.bottom(), 1);
 
 	cmdBuffer.blitImage(currentImage, vk::ImageLayout::eTransferSrcOptimal, frameBuffer_[0].image, vk::ImageLayout::eTransferDstOptimal, imageCopy, vk::Filter::eNearest);
 
@@ -479,13 +369,20 @@ void Glow::paintEffect(FrameContext ctx) {
 	barrier.newLayout = vk::ImageLayout::ePresentSrcKHR;
 	barrier.image = frameBuffer_[1].image;
 	cmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, barrier);
+	QRectF localRect;
+	localRect.setX(ctx.overlayRect.x() / (float)window_->swapChainImageSize().width());
+	localRect.setY(ctx.overlayRect.y() / (float)window_->swapChainImageSize().height());
+	localRect.setWidth(ctx.overlayRect.width() / (float)window_->swapChainImageSize().width());
+	localRect.setHeight(ctx.overlayRect.height() / (float)window_->swapChainImageSize().height());
 
 	EffectRect effectRect;
-	effectRect.offset = QVector2D(ctx.overlayRect.x() / (float)window_->swapChainImageSize().width(), ctx.overlayRect.y() / (float)window_->swapChainImageSize().height());
-	effectRect.scale = QVector2D(ctx.overlayRect.width() / (float)window_->swapChainImageSize().width(), ctx.overlayRect.height() / (float)window_->swapChainImageSize().height());
+	effectRect.points[0] = QVector2D(localRect.bottomLeft());
+	effectRect.points[1] = QVector2D(localRect.bottomRight());
+	effectRect.points[2] = QVector2D(localRect.topLeft());
+	effectRect.points[3] = QVector2D(localRect.topRight());
 
 	vk::RenderPassBeginInfo beginInfo;
-	beginInfo.renderPass = renderPass_;
+	beginInfo.renderPass = window_->singleRenderPass();
 	beginInfo.framebuffer = frameBuffer_[1].framebuffer;
 	beginInfo.renderArea.extent.width = window_->swapChainImageSize().width();
 	beginInfo.renderArea.extent.height = window_->swapChainImageSize().height();
@@ -540,27 +437,16 @@ void Glow::paintEffect(FrameContext ctx) {
 	cmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, barrier);
 
 	vk::RenderPassBeginInfo sbeginInfo;
-	sbeginInfo.renderPass = window_->defaultRenderPass();
+	sbeginInfo.renderPass = window_->windowRenderPass();
 	sbeginInfo.framebuffer = ctx.frameBuffer;
 	sbeginInfo.renderArea.extent.width = ctx.viewport.width();
 	sbeginInfo.renderArea.extent.height = ctx.viewport.height();
-	sbeginInfo.clearValueCount = 0;
-
-	//vk::Viewport viewport;
-	//viewport.x = 0;
-	//viewport.y = 0;
-	//viewport.width = 1;
-	//viewport.height = 1;
-	//viewport.minDepth = 0;
-	//viewport.maxDepth = 1;
-
-	//ctx.cmdBuffer.setViewport(0, viewport);
 
 	cmdBuffer.beginRenderPass(sbeginInfo, vk::SubpassContents::eInline);
 	cmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, hdrPipeline_);
 	cmdBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, hdrPipelineLayout_, 0, 1, &hdrDescSet_, 0, nullptr);
 	cmdBuffer.pushConstants<EffectRect>(hdrPipelineLayout_, vk::ShaderStageFlagBits::eVertex, 0, effectRect);
 	cmdBuffer.pushConstants<HDRParams>(hdrPipelineLayout_, vk::ShaderStageFlagBits::eFragment, sizeof(EffectRect), hdrParams_);
-	//cmdBuffer.draw(4, 1, 0, 0);
+	cmdBuffer.draw(4, 1, 0, 0);
 	cmdBuffer.endRenderPass();
 }

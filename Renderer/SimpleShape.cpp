@@ -1,6 +1,6 @@
-#include "QVKSimpleShape.h"
+#include "SimpleShape.h"
 
-void QVKSimpleShape::submit(const QVector<Vertex>& vertices, const QVector<unsigned int>& indices /*= {}*/)
+void SimpleShape::submit(const QVector<Vertex>& vertices, const QVector<unsigned int>& indices /*= {}*/)
 {
 	mVertices = vertices;
 	if (indices.isEmpty()) {
@@ -28,7 +28,7 @@ void QVKSimpleShape::submit(const QVector<Vertex>& vertices, const QVector<unsig
 	}
 }
 
-void QVKSimpleShape::update()
+void SimpleShape::update()
 {
 	needToUpdate = false;
 	vk::Device device = window_->device();
@@ -67,7 +67,7 @@ void QVKSimpleShape::update()
 	device.unmapMemory(singleDevMemory_);
 }
 
-void QVKSimpleShape::initResources()
+void SimpleShape::initResources()
 {
 	if (needToUpdate) {
 		update();
@@ -126,7 +126,7 @@ void QVKSimpleShape::initResources()
 	piplineInfo.pRasterizationState = &rasterizationState;
 
 	vk::PipelineMultisampleStateCreateInfo MSState;
-	MSState.rasterizationSamples = (vk::SampleCountFlagBits)window_->sampleCountFlagBits();
+	MSState.rasterizationSamples = window_->sampleCountFlagBits();
 	piplineInfo.pMultisampleState = &MSState;
 
 	vk::PipelineDepthStencilStateCreateInfo DSState;
@@ -158,7 +158,7 @@ void QVKSimpleShape::initResources()
 	piplineLayout_ = device.createPipelineLayout(piplineLayoutInfo);
 
 	piplineInfo.layout = piplineLayout_;
-	piplineInfo.renderPass = window_->defaultRenderPass();
+	piplineInfo.renderPass = window_->windowRenderPass();
 
 	pipline_ = device.createGraphicsPipeline(window_->pipelineCache(), piplineInfo).value;
 
@@ -166,7 +166,7 @@ void QVKSimpleShape::initResources()
 	device.destroyShaderModule(fragShader);
 }
 
-void QVKSimpleShape::releaseResources()
+void SimpleShape::releaseResources()
 {
 	vk::Device device = window_->device();
 	device.destroyPipeline(pipline_);
@@ -180,12 +180,11 @@ void QVKSimpleShape::releaseResources()
 	needToUpdate = true;
 }
 
-void QVKSimpleShape::startNextFrame(FrameContext ctx)
+void SimpleShape::startNextFrame(FrameContext ctx)
 {
 	vk::Device device = window_->device();
-
 	vk::RenderPassBeginInfo beginInfo;
-	beginInfo.renderPass = window_->defaultRenderPass();
+	beginInfo.renderPass = window_->windowRenderPass();
 	beginInfo.framebuffer = ctx.frameBuffer;
 	beginInfo.renderArea.extent.width = ctx.viewport.width();
 	beginInfo.renderArea.extent.height = ctx.viewport.height();
@@ -198,7 +197,7 @@ void QVKSimpleShape::startNextFrame(FrameContext ctx)
 	ctx.cmdBuffer.endRenderPass();
 }
 
-const char* QVKSimpleShape::vertexShaderCode()
+const char* SimpleShape::vertexShaderCode()
 {
 	return R"(#version 440
 layout(location = 0) in vec3 position;
@@ -217,7 +216,7 @@ void main()
 })";
 }
 
-const char* QVKSimpleShape::fragmentShaderCode()
+const char* SimpleShape::fragmentShaderCode()
 {
 	return R"(#version 440
 layout(location = 0) in vec4 v_color;

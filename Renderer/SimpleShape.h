@@ -1,9 +1,9 @@
-#ifndef QVKSimpleShape_h__
-#define QVKSimpleShape_h__
+#ifndef SimpleShape_h__
+#define SimpleShape_h__
 
-#include "QVKPrimitive.h"
+#include "Core\QVKPrimitive.h"
 
-class QVKSimpleShape :public QVKPrimitive {
+class SimpleShape :public QVKPrimitive {
 public:
 	struct Vertex {
 		QVector3D position;
@@ -11,7 +11,6 @@ public:
 	};
 	void submit(const QVector<Vertex>& vertices, const QVector<unsigned int>& indices = {});
 	void update();
-
 protected:
 	virtual const char* vertexShaderCode();
 	virtual const char* fragmentShaderCode();
@@ -30,4 +29,4 @@ private:
 	vk::Pipeline pipline_;
 };
 
-#endif // QVKSimpleShape_h__
+#endif // SimpleShape_h__

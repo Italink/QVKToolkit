@@ -47,15 +47,17 @@
 #include <QtCore/qset.h>
 #include <vulkan/vulkan.hpp>
 #include "glslang/Public/ShaderLang.h"
+#include "QFpsCamera.h"
 
 class QVKWindowPrivate;
 class QVKWindow;
 
 class QVKRenderer : public QObject
 {
-public:
 	friend class QVKWindow;
+	friend class QVKWindowPrivate;
 	friend class QVKScene;
+public:
 	struct FrameContext {
 		vk::Framebuffer frameBuffer;
 		vk::Image frameImage;
@@ -63,23 +65,21 @@ public:
 		QSize viewport;
 		QRect overlayRect;
 		vk::CommandBuffer cmdBuffer;
+		float time;
 	};
 public:
-	virtual ~QVKRenderer() {}
-
+	bool isVkTime() const;
+	void resetVkSource();
+	virtual void setWindow(QVKWindow* window);
+protected:
 	virtual void preInitResources() {}
 	virtual void initResources() {}
 	virtual void initSwapChainResources() {}
 	virtual void releaseSwapChainResources() {}
 	virtual void releaseResources() {}
-
-	virtual void startNextFrame(FrameContext beginInfo) = 0;
-
+	virtual void startNextFrame(FrameContext frameCtx) = 0;
 	virtual void physicalDeviceLost() {}
 	virtual void logicalDeviceLost() {}
-
-	bool isVkTime() const;
-
 protected:
 	QVKWindow* window_ = nullptr;
 };
@@ -87,14 +87,14 @@ protected:
 class QVKWindow : public QWindow
 {
 	Q_OBJECT;
-	Q_DECLARE_PRIVATE(QVKWindow)
 public:
+	Q_DECLARE_PRIVATE(QVKWindow);
 	enum Flag {
 		PersistentResources = 0x01
 	};
-	Q_DECLARE_FLAGS(Flags, Flag)
+	Q_DECLARE_FLAGS(Flags, Flag);
 
-		explicit QVKWindow(QWindow* parent = nullptr);
+	explicit QVKWindow(QWindow* parent = nullptr);
 	~QVKWindow();
 
 	void setFlags(Flags flags);
@@ -116,9 +116,6 @@ public:
 
 	bool isValid() const;
 
-	void addRenderer(QSharedPointer<QVKRenderer> renderer);
-	void removeRenderer(QSharedPointer<QVKRenderer> renderer);
-
 	void frameReady();
 
 	vk::PhysicalDevice physicalDevice() const;
@@ -129,8 +126,8 @@ public:
 	vk::CommandPool graphicsCommandPool() const;
 	uint32_t hostVisibleMemoryIndex() const;
 	uint32_t deviceLocalMemoryIndex() const;
-	vk::RenderPass defaultRenderPass() const;
-
+	vk::RenderPass windowRenderPass() const;
+	vk::RenderPass singleRenderPass() const;
 	vk::Format colorFormat();
 	vk::Format depthStencilFormat() const;
 	QSize swapChainImageSize() const;
@@ -159,20 +156,46 @@ public:
 
 	bool supportsGrab() const;
 	QImage grab();
-
 	QMatrix4x4 clipCorrectionMatrix();
 
+	struct WindowFrameSource {
+		vk::Framebuffer framebuffer;
+		vk::Image image;
+		vk::DeviceMemory imageMemory;
+		vk::ImageView imageView;
+
+		vk::Image dsImage;
+		vk::ImageView dsImageView;
+		vk::DeviceMemory dsImageMemory;
+
+		vk::Image msaaImage;
+		vk::ImageView msaaImageView;
+		vk::DeviceMemory msaaImageMemory;
+	};
+	WindowFrameSource createWindowFrameSource();
+	void destoryWindowFrameSource(WindowFrameSource& wfs);
+
+	struct SingleFrameSource {
+		vk::Framebuffer framebuffer;
+		vk::Image image;
+		vk::DeviceMemory imageMemory;
+		vk::ImageView imageView;
+	};
+	SingleFrameSource createSingleFrameSource();
+	void destorySingleFrameSource(SingleFrameSource& sfs);
 public:
+	void addRenderer(QSharedPointer<QVKRenderer> renderer);
+	void removeRenderer(QSharedPointer<QVKRenderer> renderer);
 	vk::ShaderModule createShaderFromCode(EShLanguage shaderType, const char* code);
 	vk::ShaderModule createShaderFromSpirv(QString path);
 Q_SIGNALS:
 	void frameGrabbed(const QImage& image);
-
 protected:
 	void exposeEvent(QExposeEvent*) override;
 	void resizeEvent(QResizeEvent*) override;
 	bool event(QEvent*) override;
-
+public:
+	QFpsCamera camera_;
 private:
 	Q_DISABLE_COPY(QVKWindow)
 };

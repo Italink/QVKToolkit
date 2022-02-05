@@ -43,6 +43,7 @@
 #include <QtCore/QHash>
 #include <private/qwindow_p.h>
 #include "QList"
+#include "QFpsCamera.h"
 
 //
 //  W A R N I N G
@@ -162,7 +163,8 @@ public:
 
 	uint32_t currentFrame;
 
-	VkRenderPass defaultRenderPass = VK_NULL_HANDLE;
+	VkRenderPass windowRenderPass = VK_NULL_HANDLE;
+	VkRenderPass singleRenderPass = VK_NULL_HANDLE;
 
 	VkDeviceMemory dsMem = VK_NULL_HANDLE;
 	VkImage dsImage = VK_NULL_HANDLE;
